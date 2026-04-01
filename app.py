@@ -52,6 +52,7 @@ def dashboard():
 
     if request.method == 'POST':
         pdf = request.files.get('pdf_file')
+        pdf_password = request.form.get('pdf_password', '').strip() or None
         if not pdf or pdf.filename == '':
             error_msg = "Please select a PDF file."
         else:
@@ -61,7 +62,7 @@ def dashboard():
 
             try:
                 from analyze import run_analysis
-                results = run_analysis(target)
+                results = run_analysis(target, pdf_password)
                 if isinstance(results, list) and results:
                     # Store in session as JSON string (keep it small)
                     session['results']  = json.dumps(results)
