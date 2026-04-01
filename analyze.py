@@ -134,12 +134,33 @@ def get_audit_flags(party_data: dict) -> list:
 # ─────────────────────────────────────────────
 # Main analysis
 # ─────────────────────────────────────────────
-def run_analysis(file_path):
+def run_analysis(file_path, pdf_password=None):
     all_rows  = []
     col_map   = None
 
+    # Common bank PDF passwords to try automatically
+    auto_passwords = ['', pdf_password] if pdf_password else ['']
+    # Add common patterns
+    auto_passwords += ['password', '123456', 'bank']
+
+    opened_pdf = None
+    for pwd in auto_passwords:
+        if pwd is None:
+            continue
+        try:
+            opened_pdf = pdfplumber.open(file_path, password=pwd)
+            # Test if we can read it
+            _ = opened_pdf.pages[0]
+            break
+        except Exception:
+            opened_pdf = None
+            continue
+
+    if opened_pdf is None:
+        return [{"error": "PDF is password protected. Please provide the password."}]
+
     try:
-        with pdfplumber.open(file_path) as pdf:
+        with opened_pdf as pdf:
             for page in pdf.pages:
                 table = page.extract_table()
                 if not table:
