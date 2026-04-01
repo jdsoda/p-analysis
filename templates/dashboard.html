@@ -30,6 +30,10 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 .file-wrap input[type=file]{width:100%;background:var(--surface2);border:1px dashed var(--border);border-radius:6px;padding:10px 14px;color:var(--text);font-family:'IBM Plex Mono',monospace;font-size:.85rem;cursor:pointer;transition:.2s;}
 .file-wrap input[type=file]:hover{border-color:var(--gold);}
 .file-wrap input[type=file]::file-selector-button{background:var(--gold-dim);color:var(--gold);border:none;padding:6px 14px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:.8rem;cursor:pointer;margin-right:12px;}
+.pwd-wrap{min-width:200px;}
+.pdf-pwd-input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:.85rem;transition:.2s;}
+.pdf-pwd-input:focus{outline:none;border-color:var(--gold);}
+.pdf-pwd-input::placeholder{color:var(--muted);}
 .btn-analyze{background:var(--gold);color:#000;border:none;padding:11px 28px;border-radius:6px;font-weight:700;font-size:.9rem;cursor:pointer;white-space:nowrap;transition:.2s;}
 .btn-analyze:hover{opacity:.85;}
 .note{margin-top:12px;font-size:.73rem;color:var(--muted);}
@@ -110,10 +114,13 @@ footer{text-align:center;color:var(--muted);font-size:.7rem;padding:24px;border-
         <div class="file-wrap">
           <input type="file" name="pdf_file" accept=".pdf" required>
         </div>
+        <div class="pwd-wrap">
+          <input type="password" name="pdf_password" placeholder="🔒 PDF Password (optional)" class="pdf-pwd-input">
+        </div>
         <button type="submit" class="btn-analyze">▶ Analyze</button>
       </div>
     </form>
-    <p class="note">ⓘ SBI, HDFC, ICICI, Axis, Canara &amp; most PDFs supported &nbsp;|&nbsp; Party-wise aggregation &nbsp;|&nbsp; Auto IT/GST flags</p>
+    <p class="note">ⓘ Password protected bank PDFs supported &nbsp;|&nbsp; SBI, HDFC, ICICI, Axis, Canara &nbsp;|&nbsp; Auto IT/GST flags</p>
   </div>
 
   {% for msg in get_flashed_messages() %}
