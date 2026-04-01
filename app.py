@@ -1,4 +1,4 @@
-import os, json, tempfile, subprocess, sys
+import os, json, tempfile, gc
 from functools import wraps
 from flask import (Flask, render_template, request, redirect,
                    url_for, session, send_file, flash)
@@ -61,8 +61,11 @@ def dashboard():
             pdf.save(target)
 
             try:
+                import sys
+                sys.path.insert(0, os.path.dirname(__file__))
                 from analyze import run_analysis
                 results = run_analysis(target, pdf_password)
+                gc.collect()
                 if isinstance(results, list) and results:
                     # Store in session as JSON string (keep it small)
                     session['results']  = json.dumps(results)
@@ -116,6 +119,7 @@ def download_excel():
 
         from export import run_export
         run_export(json_path, xlsx_path, pdf_name)
+        gc.collect()
 
         fname = f"P-Analysis_{pdf_name}.xlsx"
         return send_file(xlsx_path, as_attachment=True,
