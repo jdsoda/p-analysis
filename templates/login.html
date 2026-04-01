@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>P-ANALYSIS | Login</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--surface2:#1c2128;--text:#e6edf3;--muted:#8b949e;--gold:#d4a72c;--gold-dim:#6e5218;--danger:#f85149;--danger-bg:#3d1214;--warn:#e3b341;--warn-bg:#3a2200;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:52px 48px;width:100%;max-width:420px;text-align:center;}
+.lock{font-size:2.8rem;margin-bottom:18px;}
+h1{font-family:'IBM Plex Mono',monospace;font-size:1.4rem;color:var(--gold);letter-spacing:3px;margin-bottom:8px;}
+.tag{font-size:.78rem;color:var(--muted);margin-bottom:36px;}
+label{display:block;text-align:left;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;}
+input[type=password]{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:13px 16px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:.95rem;margin-bottom:20px;transition:.2s;}
+input[type=password]:focus{outline:none;border-color:var(--gold);}
+.btn{width:100%;background:var(--gold);color:#000;border:none;padding:14px;border-radius:8px;font-weight:700;font-size:.95rem;cursor:pointer;letter-spacing:.5px;transition:.2s;}
+.btn:hover{opacity:.85;}
+.err{background:var(--danger-bg);border:1px solid var(--danger);color:var(--danger);border-radius:7px;padding:11px 15px;font-size:.82rem;margin-bottom:20px;text-align:left;}
+.warn-box{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);border-radius:7px;padding:11px 15px;font-size:.82rem;margin-bottom:20px;}
+.foot{margin-top:30px;font-size:.68rem;color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="lock">🔐</div>
+  <h1>P-ANALYSIS</h1>
+  <p class="tag">Bank Statement Audit Tool &nbsp;·&nbsp; CA Access Only</p>
+
+  {% if error %}
+    <div class="err">⚠ {{ error }}</div>
+  {% endif %}
+  {% if timeout %}
+    <div class="warn-box">⏱ Session expired. Please login again.</div>
+  {% endif %}
+
+  <form method="post">
+    <label for="pwd">Password</label>
+    <input type="password" id="pwd" name="password" placeholder="Enter password" autofocus required>
+    <button type="submit" class="btn">🔓 Login</button>
+  </form>
+
+  <p class="foot">Sec 44AB &nbsp;·&nbsp; 269SS &nbsp;·&nbsp; 269T &nbsp;·&nbsp; SFT Compliance</p>
+</div>
+</body>
+</html>
