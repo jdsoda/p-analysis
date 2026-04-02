@@ -14,9 +14,9 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 h1{font-family:'IBM Plex Mono',monospace;font-size:1.4rem;color:var(--gold);letter-spacing:3px;margin-bottom:8px;}
 .tag{font-size:.78rem;color:var(--muted);margin-bottom:36px;}
 label{display:block;text-align:left;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;}
-input[type=password]{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:13px 16px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:.95rem;margin-bottom:20px;transition:.2s;}
-input[type=password]:focus{outline:none;border-color:var(--gold);}
-.btn{width:100%;background:var(--gold);color:#000;border:none;padding:14px;border-radius:8px;font-weight:700;font-size:.95rem;cursor:pointer;letter-spacing:.5px;transition:.2s;}
+input[type=text],input[type=password]{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:13px 16px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:.95rem;margin-bottom:16px;transition:.2s;}
+input:focus{outline:none;border-color:var(--gold);}
+.btn{width:100%;background:var(--gold);color:#000;border:none;padding:14px;border-radius:8px;font-weight:700;font-size:.95rem;cursor:pointer;transition:.2s;}
 .btn:hover{opacity:.85;}
 .err{background:var(--danger-bg);border:1px solid var(--danger);color:var(--danger);border-radius:7px;padding:11px 15px;font-size:.82rem;margin-bottom:20px;text-align:left;}
 .warn-box{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);border-radius:7px;padding:11px 15px;font-size:.82rem;margin-bottom:20px;}
@@ -27,22 +27,17 @@ input[type=password]:focus{outline:none;border-color:var(--gold);}
 <div class="card">
   <div class="lock">🔐</div>
   <h1>P-ANALYSIS</h1>
-  <p class="tag">Bank Statement Audit Tool &nbsp;·&nbsp; CA Access Only</p>
-
-  {% if error %}
-    <div class="err">⚠ {{ error }}</div>
-  {% endif %}
-  {% if timeout %}
-    <div class="warn-box">⏱ Session expired. Please login again.</div>
-  {% endif %}
-
+  <p class="tag">Bank Statement Audit Tool · CA Access Only</p>
+  {% if error %}<div class="err">⚠ {{ error }}</div>{% endif %}
+  {% if timeout %}<div class="warn-box">⏱ Session expired. Please login again.</div>{% endif %}
   <form method="post">
-    <label for="pwd">Password</label>
-    <input type="password" id="pwd" name="password" placeholder="Enter password" autofocus required>
+    <label>Username</label>
+    <input type="text" name="username" placeholder="Enter username" autofocus required>
+    <label>Password</label>
+    <input type="password" name="password" placeholder="Enter password" required>
     <button type="submit" class="btn">🔓 Login</button>
   </form>
-
-  <p class="foot">Sec 44AB &nbsp;·&nbsp; 269SS &nbsp;·&nbsp; 269T &nbsp;·&nbsp; SFT Compliance</p>
+  <p class="foot">Sec 44AB · 269SS · 269T · SFT Compliance</p>
 </div>
 </body>
 </html>
