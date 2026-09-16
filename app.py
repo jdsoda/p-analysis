@@ -145,6 +145,8 @@ def download_excel():
 
 # Persistent client/year ITR manager
 from itr_manager import itr
+from itr_excel_export import register as register_itr_excel
+register_itr_excel(itr)
 app.register_blueprint(itr)
 
 if __name__ == '__main__':
