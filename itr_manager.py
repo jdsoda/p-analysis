@@ -1,8 +1,12 @@
 import os, sqlite3, re
 from datetime import datetime
 from flask import Blueprint, render_template, request, redirect, url_for, flash
+from werkzeug.utils import secure_filename
+import pdfplumber
 
 DB_PATH = os.environ.get('ITR_DB_PATH', os.path.join(os.path.dirname(__file__), 'itr.sqlite3'))
+UPLOAD_DIR = os.environ.get('ITR_UPLOAD_DIR', os.path.join(os.path.dirname(__file__), 'itr_uploads'))
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 itr = Blueprint('itr', __name__, url_prefix='/itr')
 
 FIELDS = [
@@ -34,11 +38,22 @@ VARIANTS = {
     'debtors': 'Debtors', 'creditors': 'Creditors', 'investments': 'Investments'
 }
 
+BANK_CATEGORIES = [
+    ('UNCLASSIFIED', 'Review'),
+    ('MILK_SALES', 'Milk Sales'),
+    ('MILK_PURCHASES', 'Milk Purchases'),
+    ('BUSINESS_EXPENSE', 'Business Expense'),
+    ('LOAN_OR_TRANSFER', 'Loan / Own Transfer'),
+    ('PERSONAL_OR_OTHER', 'Personal / Other')
+]
+
+
 def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute('PRAGMA foreign_keys=ON')
     return con
+
 
 def init_db():
     con = db()
@@ -48,18 +63,49 @@ def init_db():
     CREATE TABLE IF NOT EXISTS account_values(id INTEGER PRIMARY KEY AUTOINCREMENT, financial_year_id INTEGER NOT NULL, statement_type TEXT NOT NULL, field_key TEXT NOT NULL, field_label TEXT NOT NULL, amount REAL NOT NULL DEFAULT 0, source_type TEXT NOT NULL DEFAULT 'MANUAL', growth_method TEXT NOT NULL DEFAULT 'AUTO_GROWTH', growth_percent REAL NOT NULL DEFAULT 10, UNIQUE(financial_year_id,statement_type,field_key), FOREIGN KEY(financial_year_id) REFERENCES financial_years(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS projection_settings(id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER, field_key TEXT NOT NULL, growth_percent REAL NOT NULL DEFAULT 10, growth_method TEXT NOT NULL DEFAULT 'AUTO_GROWTH', UNIQUE(client_id,field_key), FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS field_mappings(id INTEGER PRIMARY KEY AUTOINCREMENT, variant_text TEXT NOT NULL, standard_field TEXT NOT NULL, statement_type TEXT NOT NULL, UNIQUE(variant_text,standard_field,statement_type));
+    CREATE TABLE IF NOT EXISTS bank_transactions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        financial_year_id INTEGER NOT NULL,
+        txn_date TEXT,
+        narration TEXT,
+        debit REAL NOT NULL DEFAULT 0,
+        credit REAL NOT NULL DEFAULT 0,
+        balance REAL,
+        channel TEXT,
+        suggested_category TEXT NOT NULL DEFAULT 'UNCLASSIFIED',
+        confidence REAL NOT NULL DEFAULT 0,
+        final_category TEXT NOT NULL DEFAULT 'UNCLASSIFIED',
+        notes TEXT,
+        source_file TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(financial_year_id,txn_date,narration,debit,credit,balance),
+        FOREIGN KEY(financial_year_id) REFERENCES financial_years(id) ON DELETE CASCADE
+    );
     ''')
+    # Lightweight migration for databases created before bank import was added.
+    for col, definition in [
+        ('bank_receipts_mode', 'TEXT NOT NULL DEFAULT "REVIEW"'),
+        ('bank_import_file', 'TEXT')
+    ]:
+        try:
+            con.execute(f'ALTER TABLE financial_years ADD COLUMN {col} {definition}')
+        except sqlite3.OperationalError:
+            pass
     con.commit(); con.close()
+
 
 def ensure_defaults(con, client_id):
     for _, field in FIELDS:
         con.execute('INSERT OR IGNORE INTO projection_settings(client_id,field_key,growth_percent,growth_method) VALUES(?,?,10,"AUTO_GROWTH")',(client_id,field))
 
+
 def year_rows(con, client_id):
     return con.execute('SELECT * FROM financial_years WHERE client_id=? ORDER BY financial_year DESC',(client_id,)).fetchall()
 
+
 def get_values(con, fyid):
     return con.execute('SELECT * FROM account_values WHERE financial_year_id=? ORDER BY statement_type,id',(fyid,)).fetchall()
+
 
 def create_values_from_previous(con, fyid, previous_id, client_id):
     prev = {r['field_key']: r for r in get_values(con, previous_id)} if previous_id else {}
@@ -72,18 +118,135 @@ def create_values_from_previous(con, fyid, previous_id, client_id):
         amount = base * (1+pct/100) if method == 'AUTO_GROWTH' else base
         con.execute('INSERT OR REPLACE INTO account_values(financial_year_id,statement_type,field_key,field_label,amount,source_type,growth_method,growth_percent) VALUES(?,?,?,?,?,?,?,?)',(fyid,statement,field,field,amount,'CARRY_FORWARD',method,pct))
 
+
 def parse_year(s):
     m = re.search(r'(20\d{2})\D*(20\d{2})', s or '')
     return f'{m.group(1)}-{m.group(2)[-2:]}' if m else None
+
+
+def clean_amount(value):
+    if value is None:
+        return None
+    s = str(value).replace(',', '').replace('₹', '').replace('Rs.', '').replace('Rs', '').strip()
+    s = re.sub(r'[^0-9.()\-]', '', s)
+    if not s:
+        return None
+    neg = s.startswith('(') and s.endswith(')')
+    s = s.strip('()')
+    try:
+        n = float(s)
+        return -n if neg else n
+    except ValueError:
+        return None
+
+
+def normalize_date(value):
+    if not value:
+        return None
+    s = str(value).strip().replace('.', '/').replace('-', '/')
+    for fmt in ('%d/%m/%Y','%d/%m/%y','%d/%m/%Y %H:%M:%S','%d/%m/%Y %H:%M'):
+        try:
+            return datetime.strptime(s, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    m = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](20\d{2})', s)
+    return f'{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}' if m else s
+
+
+def classify_bank_row(narration, debit, credit, cash_deposits_as_sales=False):
+    n = (narration or '').lower()
+    # Explicit user-selected policy: cash deposits can be treated as milk sales.
+    if cash_deposits_as_sales and credit > 0 and ('cash deposit' in n or 'cash dep' in n or 'cash' == n.strip()):
+        return 'MILK_SALES', 0.98
+    if credit > 0 and any(x in n for x in ('milk', 'hatsun customer', 'customer receipt', 'upi')):
+        return 'MILK_SALES', 0.72
+    if debit > 0 and any(x in n for x in ('hatsun', 'hapmilk', 'milk supplier', 'milk purchase')):
+        return 'MILK_PURCHASES', 0.96
+    if any(x in n for x in ('loan', 'neft self', 'own transfer', 'transfer to self', 'capital')):
+        return 'LOAN_OR_TRANSFER', 0.90
+    if debit > 0 and any(x in n for x in ('electric', 'power', 'rent', 'salary', 'telephone', 'maintenance', 'repair')):
+        return 'BUSINESS_EXPENSE', 0.82
+    if credit > 0:
+        return 'UNCLASSIFIED', 0.25
+    if debit > 0:
+        return 'PERSONAL_OR_OTHER', 0.20
+    return 'UNCLASSIFIED', 0.0
+
+
+def infer_channel(narration):
+    n = (narration or '').lower()
+    if 'upi' in n: return 'UPI'
+    if 'neft' in n: return 'NEFT'
+    if 'imps' in n: return 'IMPS'
+    if 'rtgs' in n: return 'RTGS'
+    if 'cash' in n: return 'CASH'
+    if 'cheque' in n or 'chq' in n: return 'CHEQUE'
+    return 'OTHER'
+
+
+def parse_bank_pdf(path, cash_deposits_as_sales=False):
+    rows = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables() or []
+            for table in tables:
+                for raw in table:
+                    cells = [str(x).strip() if x is not None else '' for x in raw]
+                    if not any(cells):
+                        continue
+                    joined = ' '.join(cells).lower()
+                    if 'date' in joined and ('debit' in joined or 'credit' in joined):
+                        continue
+                    date_idx = next((i for i,c in enumerate(cells) if re.search(r'\b\d{1,2}[/-]\d{1,2}[/-](?:20)?\d{2}\b', c)), None)
+                    if date_idx is None:
+                        continue
+                    txn_date = normalize_date(cells[date_idx])
+                    numeric = [(i, clean_amount(c)) for i,c in enumerate(cells) if clean_amount(c) is not None]
+                    if not numeric:
+                        continue
+                    # Most bank PDFs have narration followed by debit, credit, balance.
+                    # Prefer the last three numeric cells and infer debit/credit from the row layout.
+                    tail = numeric[-3:]
+                    nums = [v for _,v in tail]
+                    balance = nums[-1] if len(nums) >= 1 else None
+                    debit = nums[-3] if len(nums) == 3 else 0
+                    credit = nums[-2] if len(nums) == 3 else 0
+                    if len(nums) == 2:
+                        debit, credit = 0, nums[0]
+                    if len(nums) == 1:
+                        debit, credit = 0, nums[0]
+                    narration_parts = [c for i,c in enumerate(cells) if i != date_idx and clean_amount(c) is None]
+                    narration = ' '.join(x for x in narration_parts if x).strip()
+                    if not narration:
+                        narration = ' '.join(cells[:date_idx] + cells[date_idx+1:-3]).strip()
+                    # Remove obvious header/footer noise.
+                    if len(narration) < 2 or any(x in narration.lower() for x in ('opening balance','closing balance','statement of account')):
+                        continue
+                    cat, confidence = classify_bank_row(narration, debit, credit, cash_deposits_as_sales)
+                    rows.append({
+                        'txn_date': txn_date, 'narration': narration, 'debit': round(abs(debit or 0),2),
+                        'credit': round(abs(credit or 0),2), 'balance': balance,
+                        'channel': infer_channel(narration), 'suggested_category': cat,
+                        'confidence': confidence
+                    })
+    # De-duplicate rows that some PDFs repeat in adjacent table fragments.
+    unique = {}
+    for r in rows:
+        key = (r['txn_date'], r['narration'], r['debit'], r['credit'], r['balance'])
+        unique[key] = r
+    return list(unique.values())
+
 
 @itr.before_app_request
 def _init():
     init_db()
 
+
 @itr.route('/')
 def clients():
     con=db(); rows=con.execute('SELECT c.*, (SELECT MAX(financial_year) FROM financial_years f WHERE f.client_id=c.id) latest_fy FROM clients c ORDER BY c.client_name').fetchall(); con.close()
     return render_template('itr_clients.html', clients=rows)
+
 
 @itr.route('/client/new', methods=['GET','POST'])
 def new_client():
@@ -93,11 +256,13 @@ def new_client():
         ensure_defaults(con,cur.lastrowid); con.commit(); con.close(); return redirect(url_for('itr.client',client_id=cur.lastrowid))
     return render_template('itr_client_form.html')
 
+
 @itr.route('/client/<int:client_id>')
 def client(client_id):
     con=db(); c=con.execute('SELECT * FROM clients WHERE id=?',(client_id,)).fetchone(); years=year_rows(con,client_id); con.close()
     if not c: return 'Client not found',404
     return render_template('itr_client.html',client=c,years=years)
+
 
 @itr.route('/client/<int:client_id>/year/new', methods=['POST'])
 def new_year(client_id):
@@ -114,6 +279,7 @@ def new_year(client_id):
         con.rollback(); flash('That financial year already exists.')
     con.close(); return redirect(url_for('itr.year',fyid=fyid if 'fyid' in locals() else 0))
 
+
 @itr.route('/year/<int:fyid>', methods=['GET','POST'])
 def year(fyid):
     con=db(); fy=con.execute('SELECT f.*,c.client_name FROM financial_years f JOIN clients c ON c.id=f.client_id WHERE f.id=?',(fyid,)).fetchone()
@@ -128,6 +294,69 @@ def year(fyid):
     vals=get_values(con,fyid); groups={}
     for r in vals: groups.setdefault(r['statement_type'],[]).append(r)
     con.close(); return render_template('itr_year.html',fy=fy,groups=groups)
+
+
+@itr.route('/year/<int:fyid>/bank-import', methods=['GET','POST'])
+def bank_import(fyid):
+    con=db(); fy=con.execute('SELECT f.*,c.client_name FROM financial_years f JOIN clients c ON c.id=f.client_id WHERE f.id=?',(fyid,)).fetchone()
+    if not fy: con.close(); return 'Financial year not found',404
+    if request.method == 'POST':
+        file = request.files.get('bank_pdf')
+        cash_mode = request.form.get('cash_deposits_as_sales') == '1'
+        if not file or not file.filename.lower().endswith('.pdf'):
+            flash('Please select a bank statement PDF.')
+            con.close(); return redirect(url_for('itr.bank_import',fyid=fyid))
+        safe = secure_filename(file.filename)
+        path = os.path.join(UPLOAD_DIR, f'{fyid}_{safe}')
+        file.save(path)
+        try:
+            rows = parse_bank_pdf(path, cash_mode)
+            now = datetime.utcnow().isoformat()
+            for r in rows:
+                con.execute('''INSERT OR IGNORE INTO bank_transactions
+                    (financial_year_id,txn_date,narration,debit,credit,balance,channel,suggested_category,confidence,final_category,source_file,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (fyid,r['txn_date'],r['narration'],r['debit'],r['credit'],r['balance'],r['channel'],r['suggested_category'],r['confidence'],r['suggested_category'],safe,now))
+            con.execute('UPDATE financial_years SET bank_receipts_mode=?,bank_import_file=?,updated_at=? WHERE id=?',('CASH_AS_SALES' if cash_mode else 'REVIEW',safe,now,fyid))
+            con.commit(); flash(f'Imported {len(rows)} bank transactions. Please review classification before posting.')
+        except Exception as exc:
+            con.rollback(); flash(f'Bank PDF could not be parsed: {exc}')
+    txns=con.execute('SELECT * FROM bank_transactions WHERE financial_year_id=? ORDER BY txn_date,id',(fyid,)).fetchall()
+    totals=con.execute('''SELECT
+        COALESCE(SUM(credit),0) credits, COALESCE(SUM(debit),0) debits,
+        COALESCE(SUM(CASE WHEN final_category='MILK_SALES' THEN credit ELSE 0 END),0) milk_sales,
+        COALESCE(SUM(CASE WHEN final_category='MILK_PURCHASES' THEN debit ELSE 0 END),0) milk_purchases
+        FROM bank_transactions WHERE financial_year_id=?''',(fyid,)).fetchone()
+    con.close(); return render_template('itr_bank_import.html',fy=fy,txns=txns,totals=totals,categories=BANK_CATEGORIES)
+
+
+@itr.route('/year/<int:fyid>/bank-import/save', methods=['POST'])
+def save_bank_categories(fyid):
+    con=db(); fy=con.execute('SELECT * FROM financial_years WHERE id=?',(fyid,)).fetchone()
+    if not fy: con.close(); return 'Financial year not found',404
+    for key, value in request.form.items():
+        if not key.startswith('cat_'): continue
+        try: tid=int(key[4:])
+        except ValueError: continue
+        allowed={x[0] for x in BANK_CATEGORIES}
+        if value not in allowed: continue
+        con.execute('UPDATE bank_transactions SET final_category=? WHERE id=? AND financial_year_id=?',(value,tid,fyid))
+    con.commit(); con.close(); flash('Bank classifications saved. Nothing is posted to P&L until you apply totals.')
+    return redirect(url_for('itr.bank_import',fyid=fyid))
+
+
+@itr.route('/year/<int:fyid>/bank-import/apply', methods=['POST'])
+def apply_bank_totals(fyid):
+    con=db(); fy=con.execute('SELECT * FROM financial_years WHERE id=?',(fyid,)).fetchone()
+    if not fy: con.close(); return 'Financial year not found',404
+    sales=con.execute("SELECT COALESCE(SUM(credit),0) FROM bank_transactions WHERE financial_year_id=? AND final_category='MILK_SALES'",(fyid,)).fetchone()[0]
+    purchases=con.execute("SELECT COALESCE(SUM(debit),0) FROM bank_transactions WHERE financial_year_id=? AND final_category='MILK_PURCHASES'",(fyid,)).fetchone()[0]
+    con.execute("UPDATE account_values SET amount=?,source_type='BANK_IMPORT' WHERE financial_year_id=? AND field_key='Sales'",(sales,fyid))
+    con.execute("UPDATE account_values SET amount=?,source_type='BANK_IMPORT' WHERE financial_year_id=? AND field_key='Purchases'",(purchases,fyid))
+    con.execute("UPDATE financial_years SET updated_at=? WHERE id=?",(datetime.utcnow().isoformat(),fyid))
+    con.commit(); con.close(); flash(f'Applied Bank Review totals: Sales ₹{sales:,.2f}, Purchases ₹{purchases:,.2f}.')
+    return redirect(url_for('itr.year',fyid=fyid))
+
 
 @itr.route('/year/<int:fyid>/next', methods=['POST'])
 def next_year(fyid):
